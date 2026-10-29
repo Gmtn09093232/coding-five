@@ -6,6 +6,7 @@ import rateLimit from 'express-rate-limit';
 import multer from 'multer';
 import { createClient } from '@supabase/supabase-js';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +22,8 @@ export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   supabaseUrl: required('SUPABASE_URL'),
   supabaseServiceKey: required('SUPABASE_SERVICE_ROLE_KEY'),
+  publicSupabaseUrl: process.env.VITE_SUPABASE_URL || required('SUPABASE_URL'),
+  publicSupabaseAnonKey: process.env.VITE_SUPABASE_ANON_KEY || '',
   maxCadFileBytes: Number(process.env.MAX_CAD_FILE_MB ?? 100) * 1024 * 1024,
 };
 
@@ -96,14 +99,30 @@ app.use(cors({ origin: env.nodeEnv === 'production' ? process.env.FRONTEND_ORIGI
 app.use(express.json({ limit: '1mb' }));
 app.use('/api/', rateLimit({ windowMs: 60_000, max: 120 }));
 
-// Serve the frontend bundle and shared engineering libs
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+// Serve the frontend bundle with injected environment variables
+app.get('/', (_req, res) => {
+  const htmlPath = path.join(__dirname, 'index.html');
+  let html = fs.readFileSync(htmlPath, 'utf8');
+
+  // Inject Supabase config directly into the HTML
+  const configScript = `
+    <script>
+      window.__SUPABASE_URL__ = "${env.publicSupabaseUrl}";
+      window.__SUPABASE_ANON__ = "${env.publicSupabaseAnonKey}";
+    </script>
+  `;
+  
+  // Insert the script right before the closing </head> tag
+  html = html.replace('</head>', `${configScript}</head>`);
+  res.send(html);
+});
+
 app.get('/engineering-libs.js', (_req, res) => res.sendFile(path.join(__dirname, 'engineering-libs.js')));
 
 // DYNAMIC IMPORT: Breaks the circular dependency with server-api.js
 import('./server-api.js').then(({ default: apiRouter }) => {
   app.use('/api', apiRouter);
-  app.use(errorHandler); // Error handler must be registered AFTER routes
+  app.use(errorHandler);
   
   app.listen(env.port, () => {
     console.log(`FANUC Grinding CAM listening on http://localhost:${env.port}`);
