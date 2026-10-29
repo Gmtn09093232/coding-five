@@ -94,6 +94,10 @@ export function errorHandler(err, _req, res, _next) {
 
 // --- SERVER BOOTSTRAP ---
 const app = express();
+
+// FIX: Trust Render's proxy so express-rate-limit can read the real client IP
+app.set('trust proxy', 1);
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: env.nodeEnv === 'production' ? process.env.FRONTEND_ORIGIN : true }));
 app.use(express.json({ limit: '1mb' }));
