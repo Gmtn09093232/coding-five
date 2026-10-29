@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FANUC 5-Axis Grinding CAM</title>
+  <title>Q5 Syntec Tool Grinder CAM</title>
   <script type="importmap">
     {
       "imports": {
@@ -13,6 +13,7 @@
     }
   </script>
   <style>
+    /* CSS stays the same */
     :root { --bg: #14171c; --panel: #1c2128; --border: #2a3038; --text: #d5dbe3; --muted: #8a93a0; --accent: #3d8bfd; --ok: #4caf50; --warn: #ff9800; }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -22,8 +23,7 @@
     .brand { font-weight: 600; color: var(--accent); }
     #main-nav { display: flex; gap: 8px; flex: 1; }
     #main-nav button { background: transparent; color: var(--muted); border: 1px solid transparent; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
-    #main-nav button:hover { color: var(--text); background: #232a33; }
-    #main-nav button.active { color: var(--accent); border-color: var(--accent); }
+    #main-nav button:hover, #main-nav button.active { color: var(--accent); border-color: var(--accent); }
     main { display: grid; gap: 16px; padding: 16px; grid-template-columns: 1fr; flex: 1; overflow: auto; }
     main.split { grid-template-columns: 380px 1fr; }
     .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px; overflow: auto; }
@@ -32,26 +32,21 @@
     .panel input, .panel textarea, .panel select { width: 100%; padding: 7px 9px; margin-top: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 3px; font-family: inherit; font-size: 13px; }
     .panel button { padding: 8px 14px; background: var(--accent); color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 13px; }
     .panel button:hover { filter: brightness(1.1); }
-    .viewport-panel { display: flex; flex-direction: column; gap: 8px; }
-    .viewport { flex: 1; min-height: 400px; background: #14171c; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-    .view-toolbar { display: flex; gap: 6px; }
-    .view-toolbar button { padding: 4px 10px; background: #232a33; color: var(--text); border: 1px solid var(--border); border-radius: 3px; cursor: pointer; }
+    .viewport { min-height: 400px; background: #14171c; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
     .hint { color: var(--muted); font-size: 12px; margin: 8px 0; }
     .warn { color: var(--warn); font-size: 12px; }
     .ok { color: var(--ok); }
-    .info-grid dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 12px 0 0; }
-    .info-grid dt { color: var(--muted); }
-    .info-grid dd { margin: 0; }
     .project-list { list-style: none; padding: 0; margin: 0; }
     .project-list li { padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; }
     .project-list li:hover { background: #232a33; }
     .project-list .status { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #232a33; color: var(--muted); }
+    pre.code-block { background: #0d1117; color: #c9d1d9; padding: 16px; border-radius: 6px; font-family: 'Consolas', monospace; font-size: 13px; overflow: auto; height: 100%; max-height: 500px; border: 1px solid var(--border); }
   </style>
 </head>
 <body>
   <div id="app">
     <header class="topbar">
-      <div class="brand">FANUC 31i-B5 Plus · Grinding CAM</div>
+      <div class="brand">Q5 Syntec · Tool Grinding CAM</div>
       <nav id="main-nav"></nav>
       <div id="user-badge"></div>
     </header>
@@ -61,10 +56,8 @@
   <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-    import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-    import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 
-    // --- CLIENT API ---
+    // --- CLIENT API & AUTH ---
     let accessToken = null;
     function setToken(t) { accessToken = t; }
     async function request(path, options = {}) {
@@ -80,12 +73,10 @@
     }
     const api = {
       get: (p) => request(p),
-      post: (p, data) => request(p, { method: 'POST', body: JSON.stringify(data) }),
-      upload: (p, formData) => request(p, { method: 'POST', body: formData }),
+      post: (p, data) => request(p, { method: 'POST', body: JSON.stringify(data) })
     };
 
-    // --- CLIENT AUTH ---
-    const SESSION_KEY = 'fanuc-cam-token';
+    const SESSION_KEY = 'q5-cam-token';
     function loadToken() { const t = localStorage.getItem(SESSION_KEY); if (t) setToken(t); return t; }
     function saveToken(t) { localStorage.setItem(SESSION_KEY, t); setToken(t); }
     function clearToken() { localStorage.removeItem(SESSION_KEY); setToken(null); }
@@ -127,6 +118,13 @@
         this._resize(); this._animate();
       }
       loadObject3D(obj) { this.modelGroup.clear(); this.modelGroup.add(obj); this.fitToObject(obj); }
+      drawToolpath(points) {
+        const geom = new THREE.BufferGeometry().setFromPoints(
+          points.map(p => new THREE.Vector3(p.position[0], p.position[1], p.position[2]))
+        );
+        const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: 0x4caf50, linewidth: 2 }));
+        this.modelGroup.add(line);
+      }
       fitToObject(obj) {
         const box = new THREE.Box3().setFromObject(obj);
         if (box.isEmpty()) return;
@@ -135,14 +133,6 @@
         this.camera.position.set(center.x + d, center.y + d, center.z + d);
         this.controls.target.copy(center); this.camera.near = d / 100; this.camera.far = d * 100;
         this.camera.updateProjectionMatrix(); this.controls.update();
-      }
-      setView(name) {
-        const views = { iso: [1,1,1], front: [0,0,1], back: [0,0,-1], left: [-1,0,0], right: [1,0,0], top: [0,1,0], bottom: [0,-1,0] };
-        const dir = views[name] ?? views.iso, box = new THREE.Box3().setFromObject(this.modelGroup);
-        if (box.isEmpty()) return;
-        const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3()), d = Math.max(size.x, size.y, size.z) * 2;
-        this.camera.position.set(center.x + dir[0]*d, center.y + dir[1]*d, center.z + dir[2]*d);
-        this.controls.target.copy(center); this.controls.update();
       }
       _resize() {
         const w = this.container.clientWidth, h = this.container.clientHeight;
@@ -158,7 +148,7 @@
       root.innerHTML = `
         <section class="panel">
           <h2>New Project</h2>
-          <form id="new-project"><label>Project name <input name="name" required /></label><label>Part number <input name="part_number" /></label><label>Revision <input name="revision" value="A" /></label><label>Description <textarea name="description" rows="3"></textarea></label><button type="submit">Create Project</button></form>
+          <form id="new-project"><label>Project name <input name="name" required /></label><label>Part number <input name="part_number" /></label><button type="submit">Create Project</button></form>
         </section>
         <section class="panel"><h2>Projects</h2><ul id="project-list" class="project-list"><li class="hint">Loading…</li></ul></section>`;
       root.querySelector('#new-project').addEventListener('submit', async (e) => {
@@ -171,90 +161,27 @@
         ul.innerHTML = '';
         for (const p of projects) {
           const li = document.createElement('li');
-          li.innerHTML = `<span>${escapeHtml(p.name)} <small style="color:var(--muted)">${escapeHtml(p.part_number ?? '')}</small></span><span class="status">${p.status}</span>`;
+          li.innerHTML = `<span>${escapeHtml(p.name)}</span><span class="status">${p.status}</span>`;
           li.addEventListener('click', () => onProjectOpened(p.id));
           ul.appendChild(li);
         }
       } catch (err) { root.querySelector('#project-list').innerHTML = `<li class="warn">${err.message}</li>`; }
     }
 
-    async function renderProject(root, projectId) {
-      root.innerHTML = `<section class="panel"><h2>Project</h2><p class="hint">Loading…</p></section>`;
-      try {
-        const p = await api.get(`/projects/${projectId}`);
-        root.innerHTML = `<section class="panel"><h2>${escapeHtml(p.name)}</h2><div class="info-grid"><dl><dt>Part number</dt><dd>${escapeHtml(p.part_number ?? '—')}</dd><dt>Revision</dt><dd>${escapeHtml(p.revision ?? '—')}</dd><dt>Status</dt><dd>${p.status}</dd><dt>Description</dt><dd>${escapeHtml(p.description ?? '—')}</dd><dt>Created</dt><dd>${new Date(p.created_at).toLocaleString()}</dd></dl></div></section>`;
-      } catch (err) { root.innerHTML = `<section class="panel"><p class="warn">${err.message}</p></section>`; }
-    }
-
-    async function renderModelView(root, projectId) {
-      root.classList.add('split');
-      root.innerHTML = `
-        <section class="panel">
-          <h2>3D Model</h2>
-          <form id="upload-form"><input type="file" id="cad-file" accept=".step,.stp,.iges,.igs,.stl,.obj" required /><button type="submit">Upload &amp; Load</button></form>
-          <p class="hint">STEP/IGES are parsed by OCCT (Phase 2). STL/OBJ are mesh-only — analytic surfaces and tolerances are not preserved.</p>
-          <div id="model-info" class="info-grid"></div>
-        </section>
-        <section class="viewport-panel"><div id="viewport" class="viewport"></div><div class="view-toolbar"><button data-view="iso">ISO</button><button data-view="front">Front</button><button data-view="top">Top</button><button data-view="right">Right</button></div></section>`;
-      const viewport = new CADViewport(root.querySelector('#viewport'));
-      root.querySelectorAll('.view-toolbar button').forEach(btn => btn.addEventListener('click', () => viewport.setView(btn.dataset.view)));
-      root.querySelector('#upload-form').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const file = root.querySelector('#cad-file').files[0]; if (!file) return;
-        const fd = new FormData(); fd.append('file', file); fd.append('projectId', projectId);
-        try {
-          const meta = await api.upload(`/models?projectId=${encodeURIComponent(projectId)}`, fd);
-          renderModelInfo(root.querySelector('#model-info'), meta);
-          if (meta.file_format === 'stl') {
-            const geom = new STLLoader().parse(await file.arrayBuffer()); geom.computeVertexNormals();
-            viewport.loadObject3D(new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0x8fa6b8, metalness: 0.3, roughness: 0.6 })));
-          } else if (meta.file_format === 'obj') {
-            viewport.loadObject3D(new OBJLoader().parse(await file.text()));
-          } else {
-            root.querySelector('#model-info').innerHTML += `<p class="warn">CAD parsing is Phase 2. File stored; analytic geometry extraction pending.</p>`;
-          }
-        } catch (err) { alert(`Upload failed: ${err.message}`); }
-      });
-    }
-
-    async function renderSpecsView(root, projectId) {
-      root.innerHTML = `
-        <section class="panel"><h2>Engineering Specifications</h2>
-          <form id="spec-form">
-            <label>Material <input name="material" required /></label><label>Heat treatment <input name="heat_treatment" /></label>
-            <label>Length (mm) <input name="length_mm" type="number" step="0.001" /></label><label>Width (mm) <input name="width_mm" type="number" step="0.001" /></label>
-            <label>Height (mm) <input name="height_mm" type="number" step="0.001" /></label><label>Diameter (mm) <input name="diameter_mm" type="number" step="0.001" /></label>
-            <label>Bore diameter (mm) <input name="bore_diameter_mm" type="number" step="0.001" /></label><label>Grinding allowance (mm) <input name="grinding_allowance_mm" type="number" step="0.001" /></label>
-            <label>Surface roughness Ra <input name="surface_roughness_ra" type="number" step="0.001" /></label><label>Inspection requirements <textarea name="inspection_requirements" rows="3"></textarea></label>
-            <button type="submit">Save Specifications</button>
-          </form>
-          <div id="spec-result"></div>
-        </section>`;
-      root.querySelector('#spec-form').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const payload = { project_id: projectId };
-        for (const [k, v] of new FormData(e.target).entries()) if (v !== '') payload[k] = v;
-        try {
-          const saved = await api.post('/specs', payload);
-          root.querySelector('#spec-result').innerHTML = `<p class="ok">Specifications saved (id ${saved.id}).</p>`;
-        } catch (err) { alert(err.message); }
-      });
-    }
-
     async function renderMachineView(root) {
       const DEFAULT_CHAIN = [
-        { type: 'linear', axis: 'X', pivot: [0,0,0], direction: [1,0,0] }, { type: 'linear', axis: 'Y', pivot: [0,0,0], direction: [0,1,0] },
-        { type: 'linear', axis: 'Z', pivot: [0,0,0], direction: [0,0,1] }, { type: 'rotary', axis: 'C', pivot: [0,0,0], direction: [0,0,1] },
+        { type: 'linear', axis: 'X', pivot: [0,0,0], direction: [1,0,0], travel_min: -200, travel_max: 200 },
+        { type: 'linear', axis: 'Y', pivot: [0,0,0], direction: [0,1,0], travel_min: -200, travel_max: 200 },
+        { type: 'linear', axis: 'Z', pivot: [0,0,0], direction: [0,0,1], travel_min: -100, travel_max: 100 },
+        { type: 'rotary', axis: 'C', pivot: [0,0,0], direction: [0,0,1] },
         { type: 'rotary', axis: 'A', pivot: [0,0,0], direction: [1,0,0] }
       ];
       root.innerHTML = `
-        <section class="panel"><h2>Machine Configuration</h2>
-          <p class="hint">Axis arrangement is configurable. Default controller is FANUC Series 31i-B5 Plus, but installed options vary by machine builder.</p>
+        <section class="panel"><h2>Q5 Machine Configuration</h2>
           <form id="machine-form">
-            <label>Profile name <input name="name" required value="Default 5-Axis Grinder" /></label>
-            <label>Controller <input name="controller" value="FANUC Series 31i-B5 Plus" /></label>
-            <label>Builder <input name="builder" placeholder="e.g. Makino, Rollomatic" /></label>
-            <label>Axis chain (JSON — order matters)<textarea name="chain" rows="14">${JSON.stringify(DEFAULT_CHAIN, null, 2)}</textarea></label>
+            <label>Profile name <input name="name" required value="Q5 Syntec Default" /></label>
+            <label>Controller <input name="controller" value="Syntec" /></label>
+            <label>Axis chain (JSON)<textarea name="chain" rows="10">${JSON.stringify(DEFAULT_CHAIN, null, 2)}</textarea></label>
             <button type="submit">Save Machine Profile</button>
           </form>
           <div id="machine-result"></div>
@@ -262,24 +189,91 @@
       root.querySelector('#machine-form').addEventListener('submit', async (e) => {
         e.preventDefault();
         let chain;
-        try { chain = JSON.parse(new FormData(e.target).get('chain')); } catch { return alert('Axis chain is not valid JSON'); }
+        try { chain = JSON.parse(new FormData(e.target).get('chain')); } catch { return alert('Invalid JSON'); }
         try {
-          const saved = await api.post('/machines', { name: new FormData(e.target).get('name'), controller: new FormData(e.target).get('controller'), builder: new FormData(e.target).get('builder'), kinematics_json: { chain } });
-          root.querySelector('#machine-result').innerHTML = `<p class="ok">Saved profile <strong>${saved.name}</strong> (id ${saved.id}).</p><p class="hint">Kinematics validation is a Phase 3 deliverable.</p>`;
+          const saved = await api.post('/machines', { name: new FormData(e.target).get('name'), controller: new FormData(e.target).get('controller'), kinematics_json: { chain } });
+          root.querySelector('#machine-result').innerHTML = `<p class="ok">Saved profile: ${saved.id}</p>`;
         } catch (err) { alert(err.message); }
       });
     }
 
-    function renderModelInfo(el, meta) {
-      const bb = meta.bounding_box, dims = bb ? bb.max.map((v, i) => (v - bb.min[i]).toFixed(2)).join(' × ') : '—';
-      el.innerHTML = `<dl><dt>File</dt><dd>${escapeHtml(meta.file_name)}</dd><dt>Format</dt><dd>${meta.file_format.toUpperCase()}</dd><dt>Mesh only</dt><dd>${meta.is_mesh_only ? 'Yes' : 'No'}</dd><dt>Bounding dims</dt><dd>${dims} mm</dd></dl>`;
+    async function renderGcodeView(root, projectId) {
+      root.classList.add('split');
+      root.innerHTML = `
+        <section class="panel">
+          <h2>Generate G-Code</h2>
+          <form id="gcode-form">
+            <label>Machine Profile ID <input name="machine_id" required placeholder="Paste ID from Machine tab" /></label>
+            <label>Program Number <input name="programNumber" type="number" value="1001" /></label>
+            <label>Part Name <input name="partName" value="Q5-TOOL" /></label>
+            <hr style="border-color:var(--border); margin: 16px 0;"/>
+            <label>Start X <input name="startX" type="number" value="-50" /></label>
+            <label>End X <input name="endX" type="number" value="50" /></label>
+            <label>Start Y <input name="startY" type="number" value="-20" /></label>
+            <label>End Y <input name="endY" type="number" value="20" /></label>
+            <label>Step Over (mm) <input name="stepOver" type="number" value="5" step="0.1" /></label>
+            <label>Z Depth (mm) <input name="zDepth" type="number" value="-2" /></label>
+            <label>Feed Rate <input name="feedRate" type="number" value="500" /></label>
+            <button type="submit">Generate G-Code</button>
+          </form>
+          <div id="gcode-result" style="margin-top:16px;"></div>
+        </section>
+        <section class="panel" style="display:flex; flex-direction:column; gap:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h2 style="margin:0;">G-Code Output</h2>
+            <button id="download-btn" style="display:none; background:var(--ok);">Download .nc</button>
+          </div>
+          <pre id="gcode-output" class="code-block">Waiting for generation...</pre>
+          <div class="viewport" id="viewport"></div>
+        </section>`;
+
+      const viewport = new CADViewport(root.querySelector('#viewport'));
+      let currentGcode = '';
+
+      root.querySelector('#gcode-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const payload = { project_id: projectId };
+        for (const [k, v] of fd.entries()) payload[k] = v;
+
+        try {
+          root.querySelector('#gcode-output').textContent = "Generating toolpath and calculating kinematics...";
+          const res = await api.post('/gcode/generate', payload);
+          
+          currentGcode = res.gcode;
+          root.querySelector('#gcode-output').textContent = res.gcode;
+          root.querySelector('#gcode-result').innerHTML = `<p class="ok">Successfully generated ${res.gcode.split('\n').length} blocks.</p>`;
+          
+          const dlBtn = root.querySelector('#download-btn');
+          dlBtn.style.display = 'block';
+          dlBtn.onclick = () => {
+            const blob = new Blob([currentGcode], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `O${payload.programNumber}.nc`;
+            a.click();
+            URL.revokeObjectURL(url);
+          };
+
+          // Draw toolpath in 3D
+          viewport.modelGroup.clear();
+          viewport.drawToolpath(res.toolpath);
+          
+        } catch (err) {
+          root.querySelector('#gcode-output').textContent = `Error: ${err.message}`;
+          root.querySelector('#gcode-result').innerHTML = `<p class="warn">Validation Failed.</p>`;
+        }
+      });
     }
+
     function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
     // --- APP BOOTSTRAP ---
     const NAV = [
-      { id: 'dashboard', label: 'Dashboard', render: renderDashboard }, { id: 'model', label: '3D Model', render: renderModelView, needsProject: true },
-      { id: 'specs', label: 'Specifications', render: renderSpecsView, needsProject: true }, { id: 'machine', label: 'Machine Setup', render: renderMachineView }
+      { id: 'dashboard', label: 'Dashboard', render: renderDashboard }, 
+      { id: 'machine', label: 'Machine Setup', render: renderMachineView },
+      { id: 'gcode', label: 'G-Code Generator', render: renderGcodeView, needsProject: true }
     ];
     const root = document.getElementById('view-root'), nav = document.getElementById('main-nav'), userBadge = document.getElementById('user-badge');
     let currentProjectId = null;
@@ -295,10 +289,10 @@
     }
 
     async function navigate(id) {
-      updateNav(id); root.innerHTML = '';
+      updateNav(id); root.innerHTML = ''; root.className = '';
       const item = NAV.find(n => n.id === id); if (!item) return;
       try {
-        if (item.id === 'dashboard' || item.id === 'machine') await item.render(root, { onProjectOpened: (pid) => { currentProjectId = pid; navigate('model'); } });
+        if (item.id === 'dashboard' || item.id === 'machine') await item.render(root, { onProjectOpened: (pid) => { currentProjectId = pid; navigate('gcode'); } });
         else await item.render(root, currentProjectId);
       } catch (e) { root.innerHTML = `<section class="panel"><h2>Error</h2><p class="warn">${e.message}</p></section>`; }
     }
@@ -318,14 +312,10 @@
         </section>`;
 
       let isSignUp = false;
-      const title = root.querySelector('#auth-title');
-      const btn = root.querySelector('#auth-btn');
-      const toggle = root.querySelector('#toggle-auth');
-      const form = root.querySelector('#auth-form');
+      const title = root.querySelector('#auth-title'), btn = root.querySelector('#auth-btn'), toggle = root.querySelector('#toggle-auth'), form = root.querySelector('#auth-form');
 
       toggle.addEventListener('click', (e) => {
-        e.preventDefault();
-        isSignUp = !isSignUp;
+        e.preventDefault(); isSignUp = !isSignUp;
         title.textContent = isSignUp ? 'Create Account' : 'Sign in';
         btn.textContent = isSignUp ? 'Sign Up' : 'Sign in';
         toggle.textContent = isSignUp ? 'Already have an account? Sign in' : 'Create an account';
@@ -334,25 +324,16 @@
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const fd = new FormData(e.target);
-        const email = fd.get('email');
-        const password = fd.get('password');
-
         try {
           if (isSignUp) {
-            await api.post('/auth/signup', { email, password });
+            await api.post('/auth/signup', { email: fd.get('email'), password: fd.get('password') });
             alert('Account created! You can now sign in.');
-            isSignUp = false;
-            title.textContent = 'Sign in';
-            btn.textContent = 'Sign in';
-            toggle.textContent = 'Create an account';
-            form.reset();
+            isSignUp = false; title.textContent = 'Sign in'; btn.textContent = 'Sign in'; toggle.textContent = 'Create an account'; form.reset();
           } else {
-            await login(email, password);
+            await login(fd.get('email'), fd.get('password'));
             await boot();
           }
-        } catch (err) {
-          alert(`${isSignUp ? 'Signup' : 'Login'} failed: ${err.message}`);
-        }
+        } catch (err) { alert(`${isSignUp ? 'Signup' : 'Login'} failed: ${err.message}`); }
       });
     }
 
@@ -365,8 +346,6 @@
       userBadge.appendChild(logout);
       await navigate('dashboard');
     }
-    
-    // Initialize
     boot();
   </script>
 </body>
