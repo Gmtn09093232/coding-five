@@ -3,18 +3,8 @@ export const inchToMm = (v) => v * 25.4;
 export const mmToInch = (v) => v / 25.4;
 export const degToRad = (d) => d * (Math.PI / 180);
 export const radToDeg = (r) => r * (180 / Math.PI);
-export function toMm(value, unit) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) throw new Error(`Invalid numeric value: ${value}`);
-  if (unit === 'mm') return n;
-  if (unit === 'in') return inchToMm(n);
-  throw new Error(`Unsupported length unit: ${unit}`);
-}
-export function assertPositive(value, label) {
-  if (!Number.isFinite(value) || value <= 0) throw new Error(`${label} must be positive`);
-}
 
-// --- MATRIX4 ---
+// --- MATRIX4 & MATH (Kept from original) ---
 export const identity = () => [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]];
 export function translation(x, y, z) { const m = identity(); m[0][3]=x; m[1][3]=y; m[2][3]=z; return m; }
 export function rotX(t) { const c=Math.cos(t),s=Math.sin(t); return [[1,0,0,0],[0,c,-s,0],[0,s,c,0],[0,0,0,1]]; }
@@ -32,107 +22,110 @@ export function applyToPoint(m, [x, y, z]) {
   if (Math.abs(out[3])>1e-12 && out[3]!==1) return [out[0]/out[3],out[1]/out[3],out[2]/out[3]];
   return [out[0],out[1],out[2]];
 }
-export const rotationPart = (m) => m.slice(0,3).map(row=>row.slice(0,3));
 
-// --- MACHINE MODEL ---
-function axisMatrix(link, value) {
-  const [px, py, pz] = link.pivot ?? [0,0,0], [dx, dy, dz] = link.direction ?? [0,0,1];
-  if (link.type === 'linear') return translation(px+dx*value, py+dy*value, pz+dz*value);
-  if (link.type === 'rotary') {
-    let R = Math.abs(dx)>1-1e-9 ? rotX(value) : Math.abs(dy)>1-1e-9 ? rotY(value) : rotZ(value);
-    return multiplyMany(translation(px,py,pz), R, translation(-px,-py,-pz));
-  }
-  throw new Error(`Unknown link type: ${link.type}`);
-}
-export function buildForwardChain(profile, jointValues) {
-  const mats = [];
-  for (const link of profile.chain) {
-    const v = jointValues[link.axis];
-    if (v === undefined) throw new Error(`Missing joint value for axis ${link.axis}`);
-    mats.push(axisMatrix(link, v));
-  }
-  if (profile.workpiece?.transform) mats.push(profile.workpiece.transform);
-  if (profile.tool?.transform) mats.push(profile.tool.transform);
-  return multiplyMany(...mats);
-}
+// --- TOOLPATH GENERATION ---
+export function generateSurfaceGrindingToolpath({ 
+  startX, endX, startY, endY, stepOver, zDepth, safeZ = 50, feedRate = 500, rapidFeed = 2000 
+}) {
+  const path = [];
+  
+  // 1. Rapid to safe Z above start
+  path.push({ position: [startX, startY, safeZ], motion: 'rapid', feed: rapidFeed });
+  // 2. Plunge to depth
+  path.push({ position: [startX, startY, zDepth], motion: 'rapid', feed: rapidFeed });
 
-// --- KINEMATICS FK ---
-export function forward(profile, jointValues) {
-  const T = buildForwardChain(profile, jointValues);
-  const position = applyToPoint(T, [0, 0, 0]);
-  const R = rotationPart(T);
-  const normal = [R[0][2], R[1][2], R[2][2]];
-  return { position, normal, matrix: T };
-}
+  let currentY = startY;
+  let direction = 1; // 1 = move to endX, -1 = move to startX
 
-// --- KINEMATICS IK ---
-export function inverse(profile, targetPose, seed, options = {}) {
-  const { maxIterations = 200, tolerance = 1e-4, damping = 0.01 } = options;
-  const axisOrder = profile.chain.map(l => l.axis);
-  let q = { ...seed };
-  for (let iter = 0; iter < maxIterations; iter++) {
-    const current = forward(profile, q);
-    const err = [
-      targetPose.position[0]-current.position[0], targetPose.position[1]-current.position[1], targetPose.position[2]-current.position[2],
-      targetPose.normal[0]-current.normal[0], targetPose.normal[1]-current.normal[1], targetPose.normal[2]-current.normal[2],
-    ];
-    const errMag = Math.hypot(...err);
-    if (errMag < tolerance) return { jointValues: q, converged: true, iterations: iter, residual: errMag };
-    const J = Array.from({ length: 6 }, () => []);
-    const h = 1e-5;
-    for (const axis of axisOrder) {
-      const plus = forward(profile, { ...q, [axis]: q[axis] + h });
-      const dPos = [(plus.position[0]-current.position[0])/h, (plus.position[1]-current.position[1])/h, (plus.position[2]-current.position[2])/h];
-      const dNorm = [(plus.normal[0]-current.normal[0])/h, (plus.normal[1]-current.normal[1])/h, (plus.normal[2]-current.normal[2])/h];
-      for (let r=0; r<3; r++) { J[r].push(dPos[r]); J[r+3].push(dNorm[r]); }
+  // 3. Raster grinding loop
+  while ((direction === 1 && currentY <= endY) || (direction === -1 && currentY >= startY)) {
+    const targetX = direction === 1 ? endX : startX;
+    
+    // Cut across X
+    path.push({ position: [targetX, currentY, zDepth], motion: 'feed', feed: feedRate });
+
+    // Step over in Y
+    currentY += (stepOver * direction);
+    if (direction === 1 && currentY > endY) currentY = endY;
+    if (direction === -1 && currentY < startY) currentY = startY;
+
+    // Cut across Y to next raster line (if we haven't finished)
+    if ((direction === 1 && currentY <= endY) || (direction === -1 && currentY >= startY)) {
+      path.push({ position: [targetX, currentY, zDepth], motion: 'feed', feed: feedRate });
     }
-    const JJt = Array.from({ length: 6 }, () => Array(6).fill(0));
-    for (let i=0; i<6; i++) for (let j=0; j<6; j++) {
-      let s=0; for (let k=0; k<axisOrder.length; k++) s+=J[i][k]*J[j][k];
-      if (i===j) s+=damping*damping; JJt[i][j]=s;
-    }
-    const y = solveLinear(JJt, err);
-    for (let k=0; k<axisOrder.length; k++) {
-      let dq=0; for (let i=0; i<6; i++) dq+=J[i][k]*y[i];
-      q[axisOrder[k]] += dq;
-    }
+    direction *= -1;
   }
-  const c = forward(profile, q);
-  const residual = Math.hypot(targetPose.position[0]-c.position[0], targetPose.position[1]-c.position[1], targetPose.position[2]-c.position[2], targetPose.normal[0]-c.normal[0], targetPose.normal[1]-c.normal[1], targetPose.normal[2]-c.normal[2]);
-  return { jointValues: q, converged: false, iterations: maxIterations, residual };
-}
-function solveLinear(A, b) {
-  const n = A.length, M = A.map((row, i) => [...row, b[i]]);
-  for (let col=0; col<n; col++) {
-    let pivot=col;
-    for (let r=col+1; r<n; r++) if (Math.abs(M[r][col])>Math.abs(M[pivot][col])) pivot=r;
-    [M[col], M[pivot]] = [M[pivot], M[col]];
-    const div = M[col][col];
-    if (Math.abs(div) < 1e-14) throw new Error('Singular Jacobian in IK solve');
-    for (let c=col; c<=n; c++) M[col][c] /= div;
-    for (let r=0; r<n; r++) { if (r===col) continue; const f=M[r][col]; for (let c=col; c<=n; c++) M[r][c] -= f*M[col][c]; }
-  }
-  return M.map(row => row[n]);
+
+  // 4. Retract to safe Z
+  const lastPt = path[path.length - 1].position;
+  path.push({ position: [lastPt[0], lastPt[1], safeZ], motion: 'rapid', feed: rapidFeed });
+
+  return path;
 }
 
-// --- WHEEL ---
-export function wheelSurfaceSpeed({ diameterMm, rpm }) { return (Math.PI * diameterMm * rpm) / 60_000; }
-export function maxRpmForSpeed({ diameterMm, maxSpeedMS }) { return (maxSpeedMS * 60_000) / (Math.PI * diameterMm); }
-export function validateWheel(w) {
-  const errors = [];
-  if (!(w.diameter_mm > 0)) errors.push('diameter_mm must be > 0');
-  if (!(w.width_mm > 0)) errors.push('width_mm must be > 0');
-  if (w.max_surface_speed_m_s && w.max_rpm) {
-    const derived = maxRpmForSpeed({ diameterMm: w.diameter_mm, maxSpeedMS: w.max_surface_speed_m_s });
-    if (w.max_rpm > derived + 1) errors.push('max_rpm exceeds speed implied by max_surface_speed_m_s');
-  }
-  return { ok: errors.length === 0, errors };
-}
+// --- SYNTEC POSTPROCESSOR ---
+export class SyntecQ5Postprocessor {
+  static generate({ toolpath, machineProfile, programNumber = 1, partName = 'TOOL' }) {
+    const errors = [];
+    const warnings = [];
+    
+    // Basic axis limit check
+    const limits = { X: [-500, 500], Y: [-500, 500], Z: [-200, 200] };
+    if (machineProfile?.kinematics_json?.chain) {
+      machineProfile.kinematics_json.chain.forEach(axis => {
+        if (axis.travel_min !== undefined && axis.travel_max !== undefined) {
+          limits[axis.axis] = [axis.travel_min, axis.travel_max];
+        }
+      });
+    }
 
-// --- TOOLPATH ---
-export function pathPoint({ position, normal, feed, motion, opId, clearance = false }) {
-  return { position, normal, feed, motion, opId, clearance, rotarySolution: null };
-}
-export function generateSurfaceGrinding(_ctx) {
-  throw new Error('Toolpath generation is a Phase 3 deliverable — this function is a documented stub.');
+    for (const pt of toolpath) {
+      if (limits.X && (pt.position[0] < limits.X[0] || pt.position[0] > limits.X[1])) errors.push(`X out of bounds: ${pt.position[0]}`);
+      if (limits.Y && (pt.position[1] < limits.Y[0] || pt.position[1] > limits.Y[1])) errors.push(`Y out of bounds: ${pt.position[1]}`);
+      if (limits.Z && (pt.position[2] < limits.Z[0] || pt.position[2] > limits.Z[1])) errors.push(`Z out of bounds: ${pt.position[2]}`);
+    }
+
+    if (errors.length > 0) {
+      return { gcode: null, errors, warnings };
+    }
+
+    const lines = [];
+    lines.push('%');
+    lines.push(`O${String(programNumber).padStart(4, '0')} (${partName})`);
+    lines.push('(GENERATED BY SYNTEC Q5 POSTPROCESSOR)');
+    lines.push('G21 G90 G17'); // Metric, Absolute, XY Plane
+    lines.push('G54'); // Work offset
+    lines.push('M08'); // Coolant On
+    lines.push('M03 S2500'); // Spindle On CW
+    
+    let lastMotion = '';
+
+    for (const pt of toolpath) {
+      const x = pt.position[0].toFixed(3);
+      const y = pt.position[1].toFixed(3);
+      const z = pt.position[2].toFixed(3);
+
+      if (pt.motion === 'rapid') {
+        if (lastMotion !== 'rapid') {
+          lines.push('G0');
+          lastMotion = 'rapid';
+        }
+        lines.push(`X${x} Y${y} Z${z}`);
+      } else {
+        if (lastMotion !== 'feed') {
+          lines.push(`G1 F${pt.feed || 500}`);
+          lastMotion = 'feed';
+        }
+        lines.push(`X${x} Y${y} Z${z}`);
+      }
+    }
+
+    lines.push('M09'); // Coolant Off
+    lines.push('M05'); // Spindle Off
+    lines.push('G0 Z50.000'); // Safe Z
+    lines.push('M30');
+    lines.push('%');
+
+    return { gcode: lines.join('\n'), errors, warnings };
+  }
 }
