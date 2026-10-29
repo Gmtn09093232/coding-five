@@ -1,19 +1,27 @@
-# FANUC 5-Axis Grinding CAM (Phase 1)
+# FANUC 5-Axis Grinding CAM System (Phase 1)
 
-Single-folder web app: Node/Express backend + Three.js frontend + Supabase.
-Compressed into 7 core files for easy management.
+A web-based engineering CAM application designed to transform 3D models and engineering specifications into simulated, machine-specific FANUC 31i-B5 Plus grinding programs.
 
-## File Structure
-1. `server-core.js` — Express app, environment variables, security middleware, and Supabase client.
-2. `server-api.js` — All API routes, CAD upload pipeline, and G-code postprocessor skeleton.
-3. `engineering-libs.js` — Shared math, kinematics, and geometry logic (used by both server and browser).
-4. `index.html` — The complete frontend bundle (HTML, CSS, and ES6 JavaScript).
-5. `database.sql` — Full PostgreSQL schema and seed data for Supabase.
-6. `test-suite.js` — Automated unit tests for units and kinematics.
-7. `package.json` — Node dependencies and scripts.
+This repository contains the **compressed Phase 1 architecture**, organized into a minimal set of functional files.
 
-## Setup Instructions
+## Project Structure
 
-1. Install dependencies:
-   ```bash
-   npm install
+The application is intentionally compressed into a single-folder structure:
+
+*   **`server-core.js`**: Express server bootstrap, environment validation, Supabase client, and security middleware.
+*   **`server-api.js`**: REST API routes, CAD upload processing, and postprocessor skeleton.
+*   **`engineering-libs.js`**: Shared pure-JS math, kinematics (FK/IK), units, and geometry logic used by both the frontend and backend.
+*   **`index.html`**: The complete frontend bundle (HTML, CSS, and Three.js logic embedded).
+*   **`database.sql`**: Supabase PostgreSQL schema, Row Level Security (RLS) policies, and seed templates.
+*   **`tests.js`**: Automated Node.js unit tests for geometry and kinematics.
+
+## Installation & Setup
+
+### 1. Prerequisites
+*   Node.js (v18 or higher)
+*   A Supabase Project (for Auth, Database, and Storage)
+
+### 2. Environment Variables
+Copy `.env.example` to `.env` and fill in your Supabase credentials.
+```bash
+cp .env.example .env
