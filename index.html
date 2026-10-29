@@ -13,7 +13,6 @@
     }
   </script>
   <style>
-    /* CSS stays the same */
     :root { --bg: #14171c; --panel: #1c2128; --border: #2a3038; --text: #d5dbe3; --muted: #8a93a0; --accent: #3d8bfd; --ok: #4caf50; --warn: #ff9800; }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -56,6 +55,8 @@
   <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+    import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 
     // --- CLIENT API & AUTH ---
     let accessToken = null;
@@ -73,7 +74,8 @@
     }
     const api = {
       get: (p) => request(p),
-      post: (p, data) => request(p, { method: 'POST', body: JSON.stringify(data) })
+      post: (p, data) => request(p, { method: 'POST', body: JSON.stringify(data) }),
+      upload: (p, formData) => request(p, { method: 'POST', body: formData }),
     };
 
     const SESSION_KEY = 'q5-cam-token';
@@ -168,6 +170,66 @@
       } catch (err) { root.querySelector('#project-list').innerHTML = `<li class="warn">${err.message}</li>`; }
     }
 
+    async function renderModelView(root, projectId) {
+      root.classList.add('split');
+      root.innerHTML = `
+        <section class="panel">
+          <h2>3D Model Upload</h2>
+          <form id="upload-form">
+            <input type="file" id="cad-file" accept=".step,.stp,.iges,.igs,.stl,.obj" required />
+            <button type="submit" style="margin-top:10px;">Upload &amp; Load</button>
+          </form>
+          <p class="hint">STEP/IGES are parsed by OCCT (Phase 2). STL/OBJ are mesh-only — analytic surfaces and tolerances are not preserved.</p>
+          <div id="model-info" class="info-grid"></div>
+        </section>
+        <section class="viewport-panel" style="display:flex; flex-direction:column; gap:8px;">
+          <div id="viewport" class="viewport" style="flex:1;"></div>
+          <div class="view-toolbar" style="display:flex; gap:6px;">
+            <button data-view="iso" style="padding:4px 10px; background:#232a33; color:white; border:1px solid var(--border); border-radius:3px; cursor:pointer;">ISO</button>
+            <button data-view="front" style="padding:4px 10px; background:#232a33; color:white; border:1px solid var(--border); border-radius:3px; cursor:pointer;">Front</button>
+            <button data-view="top" style="padding:4px 10px; background:#232a33; color:white; border:1px solid var(--border); border-radius:3px; cursor:pointer;">Top</button>
+            <button data-view="right" style="padding:4px 10px; background:#232a33; color:white; border:1px solid var(--border); border-radius:3px; cursor:pointer;">Right</button>
+          </div>
+        </section>`;
+      
+      const viewport = new CADViewport(root.querySelector('#viewport'));
+      
+      root.querySelectorAll('.view-toolbar button').forEach(btn => {
+        btn.addEventListener('click', () => viewport.setView(btn.dataset.view));
+      });
+
+      root.querySelector('#upload-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const file = root.querySelector('#cad-file').files[0]; 
+        if (!file) return;
+        
+        const fd = new FormData(); 
+        fd.append('file', file); 
+        fd.append('projectId', projectId);
+        
+        try {
+          root.querySelector('#model-info').innerHTML = '<p class="hint">Uploading...</p>';
+          const meta = await api.upload(`/models?projectId=${encodeURIComponent(projectId)}`, fd);
+          
+          root.querySelector('#model-info').innerHTML = `
+            <p class="ok">Uploaded successfully!</p>
+            <p>File: ${meta.file_name}</p>
+            <p>Format: ${meta.file_format.toUpperCase()}</p>
+          `;
+
+          if (meta.file_format === 'stl') {
+            const geom = new STLLoader().parse(await file.arrayBuffer()); 
+            geom.computeVertexNormals();
+            viewport.loadObject3D(new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0x8fa6b8, metalness: 0.3, roughness: 0.6 })));
+          } else if (meta.file_format === 'obj') {
+            viewport.loadObject3D(new OBJLoader().parse(await file.text()));
+          } else {
+            root.querySelector('#model-info').innerHTML += `<p class="warn">CAD parsing (STEP/IGES) is Phase 2. File stored, but visual rendering is pending.</p>`;
+          }
+        } catch (err) { alert(`Upload failed: ${err.message}`); }
+      });
+    }
+
     async function renderMachineView(root) {
       const DEFAULT_CHAIN = [
         { type: 'linear', axis: 'X', pivot: [0,0,0], direction: [1,0,0], travel_min: -200, travel_max: 200 },
@@ -192,7 +254,7 @@
         try { chain = JSON.parse(new FormData(e.target).get('chain')); } catch { return alert('Invalid JSON'); }
         try {
           const saved = await api.post('/machines', { name: new FormData(e.target).get('name'), controller: new FormData(e.target).get('controller'), kinematics_json: { chain } });
-          root.querySelector('#machine-result').innerHTML = `<p class="ok">Saved profile: ${saved.id}</p>`;
+          root.querySelector('#machine-result').innerHTML = `<p class="ok">Saved profile successfully! You can now select it in the G-Code Generator.</p>`;
         } catch (err) { alert(err.message); }
       });
     }
@@ -203,7 +265,7 @@
         <section class="panel">
           <h2>Generate G-Code</h2>
           <form id="gcode-form">
-            <label>Machine Profile ID <input name="machine_id" required placeholder="Paste ID from Machine tab" /></label>
+            <label>Machine Profile <select name="machine_id" id="machine-select" required><option value="">Loading machines...</option></select></label>
             <label>Program Number <input name="programNumber" type="number" value="1001" /></label>
             <label>Part Name <input name="partName" value="Q5-TOOL" /></label>
             <hr style="border-color:var(--border); margin: 16px 0;"/>
@@ -229,6 +291,19 @@
 
       const viewport = new CADViewport(root.querySelector('#viewport'));
       let currentGcode = '';
+
+      // Fetch machines and populate dropdown
+      try {
+        const machines = await api.get('/machines');
+        const select = root.querySelector('#machine-select');
+        if (machines.length === 0) {
+          select.innerHTML = '<option value="">No machines saved. Go to Machine Setup.</option>';
+        } else {
+          select.innerHTML = machines.map(m => `<option value="${m.id}">${escapeHtml(m.name)} (${escapeHtml(m.controller)})</option>`).join('');
+        }
+      } catch (err) {
+        root.querySelector('#machine-select').innerHTML = '<option value="">Error loading machines</option>';
+      }
 
       root.querySelector('#gcode-form').addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -272,6 +347,7 @@
     // --- APP BOOTSTRAP ---
     const NAV = [
       { id: 'dashboard', label: 'Dashboard', render: renderDashboard }, 
+      { id: 'model', label: '3D Model', render: renderModelView, needsProject: true },
       { id: 'machine', label: 'Machine Setup', render: renderMachineView },
       { id: 'gcode', label: 'G-Code Generator', render: renderGcodeView, needsProject: true }
     ];
@@ -292,7 +368,7 @@
       updateNav(id); root.innerHTML = ''; root.className = '';
       const item = NAV.find(n => n.id === id); if (!item) return;
       try {
-        if (item.id === 'dashboard' || item.id === 'machine') await item.render(root, { onProjectOpened: (pid) => { currentProjectId = pid; navigate('gcode'); } });
+        if (item.id === 'dashboard' || item.id === 'machine') await item.render(root, { onProjectOpened: (pid) => { currentProjectId = pid; navigate('model'); } });
         else await item.render(root, currentProjectId);
       } catch (e) { root.innerHTML = `<section class="panel"><h2>Error</h2><p class="warn">${e.message}</p></section>`; }
     }
