@@ -66,7 +66,7 @@
 
     // --- CLIENT API ---
     let accessToken = null;
-    export function setToken(t) { accessToken = t; }
+    function setToken(t) { accessToken = t; }
     async function request(path, options = {}) {
       const headers = {
         ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
@@ -90,9 +90,14 @@
     function saveToken(t) { localStorage.setItem(SESSION_KEY, t); setToken(t); }
     function clearToken() { localStorage.removeItem(SESSION_KEY); setToken(null); }
     function isLoggedIn() { return !!localStorage.getItem(SESSION_KEY); }
+    
     async function login(email, password) {
       const url = `${window.__SUPABASE_URL__}/auth/v1/token?grant_type=password`;
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: window.__SUPABASE_ANON__ }, body: JSON.stringify({ email, password }) });
+      const res = await fetch(url, { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json', apikey: window.__SUPABASE_ANON__ }, 
+        body: JSON.stringify({ email, password }) 
+      });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error_description ?? body.msg ?? 'Login failed');
       saveToken(body.access_token);
@@ -299,11 +304,55 @@
     }
 
     async function showLogin() {
-      root.innerHTML = `<section class="panel" style="max-width:420px;margin:60px auto;"><h2>Sign in</h2><form id="login-form"><label>Email <input name="email" type="email" required /></label><label>Password <input name="password" type="password" required /></label><button type="submit">Sign in</button></form></section>`;
-      root.querySelector('#login-form').addEventListener('submit', async (e) => {
+      root.innerHTML = `
+        <section class="panel" style="max-width:420px;margin:60px auto;">
+          <h2 id="auth-title">Sign in</h2>
+          <form id="auth-form">
+            <label>Email <input name="email" type="email" required /></label>
+            <label>Password <input name="password" type="password" required minlength="6" /></label>
+            <button type="submit" id="auth-btn" style="width:100%;">Sign in</button>
+          </form>
+          <p style="text-align:center; margin-top:16px; font-size:13px;">
+            <a href="#" id="toggle-auth" style="color:var(--accent); text-decoration:none;">Create an account</a>
+          </p>
+        </section>`;
+
+      let isSignUp = false;
+      const title = root.querySelector('#auth-title');
+      const btn = root.querySelector('#auth-btn');
+      const toggle = root.querySelector('#toggle-auth');
+      const form = root.querySelector('#auth-form');
+
+      toggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        isSignUp = !isSignUp;
+        title.textContent = isSignUp ? 'Create Account' : 'Sign in';
+        btn.textContent = isSignUp ? 'Sign Up' : 'Sign in';
+        toggle.textContent = isSignUp ? 'Already have an account? Sign in' : 'Create an account';
+      });
+
+      form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const fd = new FormData(e.target);
-        try { await login(fd.get('email'), fd.get('password')); await boot(); } catch (err) { alert(`Login failed: ${err.message}`); }
+        const email = fd.get('email');
+        const password = fd.get('password');
+
+        try {
+          if (isSignUp) {
+            await api.post('/auth/signup', { email, password });
+            alert('Account created! You can now sign in.');
+            isSignUp = false;
+            title.textContent = 'Sign in';
+            btn.textContent = 'Sign in';
+            toggle.textContent = 'Create an account';
+            form.reset();
+          } else {
+            await login(email, password);
+            await boot();
+          }
+        } catch (err) {
+          alert(`${isSignUp ? 'Signup' : 'Login'} failed: ${err.message}`);
+        }
       });
     }
 
@@ -316,6 +365,8 @@
       userBadge.appendChild(logout);
       await navigate('dashboard');
     }
+    
+    // Initialize
     boot();
   </script>
 </body>
