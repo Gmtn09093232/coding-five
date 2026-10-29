@@ -1,43 +1,17 @@
 import { Router } from 'express';
 import { supabaseAdmin, requireAuth, upload, detectFormat } from './server-core.js';
+import { generateSurfaceGrindingToolpath, SyntecQ5Postprocessor } from './engineering-libs.js';
 
-// --- POSTPROCESSOR ---
-export const POSTPROCESSOR_VERSION = '0.1.0-phase1';
-export function generateHeader({ programNumber, partName, machineName, validated }) {
-  return [
-    '%',
-    `O${String(programNumber).padStart(4, '0')} (${sanitise(partName ?? 'GRINDING')})`,
-    `(FANUC 31i-B5 PLUS — POSTPROCESSOR v${POSTPROCESSOR_VERSION})`,
-    `(MACHINE: ${sanitise(machineName ?? 'UNCONFIGURED')})`,
-    `(VALIDATION: ${validated ? 'MACHINE VALIDATED' : 'NOT MACHINE VALIDATED'})`,
-    '(ILLUSTRATIVE TEMPLATE — NOT MACHINE READY)',
-    'G21 G90',
-    '(VERIFY MACHINE CONFIGURATION)',
-    '(VERIFY WORK OFFSET)',
-    '(VERIFY GRINDING WHEEL DATA)',
-  ].join('\n');
-}
-export function generateFooter() {
-  return ['(VALIDATED MACHINE-SPECIFIC OPERATIONS GO HERE)', 'M30', '%'].join('\n');
-}
-export function generateProgram(ctx) {
-  if (ctx.validated !== true) {
-    return [
-      generateHeader(ctx), '',
-      '(BLOCKED: machine kinematics and postprocessor settings are not validated.)',
-      '(No motion blocks will be emitted until validation passes.)', '',
-      generateFooter(),
-    ].join('\n');
-  }
-  throw new Error('Validated postprocessor output is a Phase 5 deliverable.');
-}
-function sanitise(s) { return String(s).replace(/[()\r\n]/g, ' ').slice(0, 48); }
+const r = Router();
 
+// ==========================================
 // --- CAD SERVICE ---
+// ==========================================
 export async function processCadUpload({ buffer, originalname, projectId, userId }) {
   const format = detectFormat(buffer, originalname);
   const isMeshOnly = format === 'stl' || format === 'obj';
   const storagePath = `${userId}/${projectId}/${Date.now()}-${sanitiseName(originalname)}`;
+  
   const { error: upErr } = await supabaseAdmin.storage
     .from('cad-models').upload(storagePath, buffer, { contentType: 'application/octet-stream', upsert: false });
   if (upErr) throw new Error(`Storage upload failed: ${upErr.message}`);
@@ -56,23 +30,32 @@ export async function processCadUpload({ buffer, originalname, projectId, userId
     file_format: format, file_size: buffer.length, is_mesh_only: isMeshOnly,
     bounding_box: boundingBox, units: 'mm', metadata,
   }).select().single();
+  
   if (error) throw new Error(`DB insert failed: ${error.message}`);
   return data;
 }
-function sanitiseName(name) { return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120); }
+
+function sanitiseName(name) { 
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120); 
+}
+
 function approximateMeshBBox(buffer) {
   const text = buffer.subarray(0, Math.min(buffer.length, 2_000_000)).toString('utf8');
   const nums = (text.match(/-?\d+\.?\d*(?:[eE][-+]?\d+)?/g) ?? []).map(Number).filter(Number.isFinite);
   if (nums.length < 6) return null;
   const xs = [], ys = [], zs = [];
-  for (let i = 0; i + 2 < nums.length; i += 3) { xs.push(nums[i]); ys.push(nums[i+1]); zs.push(nums[i+2]); }
-  return { min: [Math.min(...xs), Math.min(...ys), Math.min(...zs)], max: [Math.max(...xs), Math.max(...ys), Math.max(...zs)] };
+  for (let i = 0; i + 2 < nums.length; i += 3) { 
+    xs.push(nums[i]); ys.push(nums[i+1]); zs.push(nums[i+2]); 
+  }
+  return { 
+    min: [Math.min(...xs), Math.min(...ys), Math.min(...zs)], 
+    max: [Math.max(...xs), Math.max(...ys), Math.max(...zs)] 
+  };
 }
 
-// --- ROUTES ---
-const r = Router();
-
-// Auth
+// ==========================================
+// --- AUTH ROUTES ---
+// ==========================================
 r.post('/auth/signup', async (req, res, next) => {
   try {
     const { email, password, fullName } = req.body;
@@ -83,6 +66,7 @@ r.post('/auth/signup', async (req, res, next) => {
     res.status(201).json({ id: data.user.id });
   } catch (e) { next(e); }
 });
+
 r.get('/auth/me', requireAuth, async (req, res, next) => {
   try {
     const { data, error } = await req.supabase.from('profiles').select('*').eq('id', req.user.id).single();
@@ -91,7 +75,9 @@ r.get('/auth/me', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Projects
+// ==========================================
+// --- PROJECT ROUTES ---
+// ==========================================
 r.get('/projects', requireAuth, async (req, res, next) => {
   try {
     const { data, error } = await req.supabase.from('projects').select('*').order('updated_at', { ascending: false });
@@ -99,6 +85,7 @@ r.get('/projects', requireAuth, async (req, res, next) => {
     res.json(data);
   } catch (e) { next(e); }
 });
+
 r.post('/projects', requireAuth, async (req, res, next) => {
   try {
     const { name, part_number, revision, description } = req.body;
@@ -109,6 +96,7 @@ r.post('/projects', requireAuth, async (req, res, next) => {
     res.status(201).json(data);
   } catch (e) { next(e); }
 });
+
 r.get('/projects/:id', requireAuth, async (req, res, next) => {
   try {
     const { data, error } = await req.supabase.from('projects').select('*').eq('id', req.params.id).single();
@@ -117,7 +105,9 @@ r.get('/projects/:id', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Models
+// ==========================================
+// --- MODEL ROUTES ---
+// ==========================================
 r.post('/models', requireAuth, upload.single('file'), async (req, res, next) => {
   try {
     const projectId = req.query.projectId ?? req.body.projectId;
@@ -128,7 +118,9 @@ r.post('/models', requireAuth, upload.single('file'), async (req, res, next) => 
   } catch (e) { next(e); }
 });
 
-// Specs
+// ==========================================
+// --- SPECIFICATION ROUTES ---
+// ==========================================
 r.post('/specs', requireAuth, async (req, res, next) => {
   try {
     const { project_id } = req.body;
@@ -138,6 +130,7 @@ r.post('/specs', requireAuth, async (req, res, next) => {
     res.status(201).json(data);
   } catch (e) { next(e); }
 });
+
 r.get('/specs/:projectId', requireAuth, async (req, res, next) => {
   try {
     const { data, error } = await req.supabase.from('engineering_specifications').select('*').eq('project_id', req.params.projectId).maybeSingle();
@@ -146,7 +139,9 @@ r.get('/specs/:projectId', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Machines
+// ==========================================
+// --- MACHINE PROFILE ROUTES ---
+// ==========================================
 r.get('/machines', requireAuth, async (req, res, next) => {
   try {
     const { data, error } = await req.supabase.from('machine_profiles').select('*').order('created_at', { ascending: false });
@@ -154,6 +149,7 @@ r.get('/machines', requireAuth, async (req, res, next) => {
     res.json(data);
   } catch (e) { next(e); }
 });
+
 r.post('/machines', requireAuth, async (req, res, next) => {
   try {
     const { name, controller, builder, kinematics_json } = req.body;
@@ -166,7 +162,9 @@ r.post('/machines', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Wheels
+// ==========================================
+// --- GRINDING WHEEL ROUTES ---
+// ==========================================
 r.get('/wheels', requireAuth, async (req, res, next) => {
   try {
     const { data, error } = await req.supabase.from('grinding_wheels').select('*');
@@ -174,13 +172,80 @@ r.get('/wheels', requireAuth, async (req, res, next) => {
     res.json(data);
   } catch (e) { next(e); }
 });
+
 r.post('/wheels', requireAuth, async (req, res, next) => {
   try {
     const body = req.body;
-    if (!body.wheel_id || !body.diameter_mm || !body.width_mm) return res.status(400).json({ error: 'wheel_id, diameter_mm, width_mm required' });
+    if (!body.wheel_id || !body.diameter_mm || !body.width_mm) {
+      return res.status(400).json({ error: 'wheel_id, diameter_mm, width_mm required' });
+    }
     const { data, error } = await req.supabase.from('grinding_wheels').insert({ ...body, owner_id: req.user.id }).select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data);
+  } catch (e) { next(e); }
+});
+
+// ==========================================
+// --- G-CODE GENERATION ROUTE ---
+// ==========================================
+r.post('/gcode/generate', requireAuth, async (req, res, next) => {
+  try {
+    const { 
+      project_id, machine_id, programNumber, partName, 
+      startX, endX, startY, endY, stepOver, zDepth, feedRate 
+    } = req.body;
+
+    if (!project_id || !machine_id) {
+      return res.status(400).json({ error: 'project_id and machine_id are required' });
+    }
+
+    // 1. Fetch Machine Profile to get limits and kinematics
+    const { data: machine, error: mErr } = await supabaseAdmin
+      .from('machine_profiles').select('*').eq('id', machine_id).single();
+    if (mErr) return res.status(404).json({ error: 'Machine profile not found' });
+
+    // 2. Generate raw toolpath (array of coordinates and motions)
+    const toolpath = generateSurfaceGrindingToolpath({
+      startX: Number(startX), endX: Number(endX), 
+      startY: Number(startY), endY: Number(endY), 
+      stepOver: Number(stepOver), zDepth: Number(zDepth), 
+      feedRate: Number(feedRate || 500)
+    });
+
+    // 3. Run Postprocessor (translates coordinates to Syntec G-code)
+    const { gcode, errors, warnings } = SyntecQ5Postprocessor.generate({
+      toolpath,
+      machineProfile: machine,
+      programNumber: programNumber || 1001,
+      partName: partName || 'Q5-TOOL'
+    });
+
+    // 4. Check for Validation errors (e.g., out of bounds)
+    if (errors.length > 0) {
+      return res.status(422).json({ error: 'Validation failed', details: errors });
+    }
+
+    // 5. Save generated program to Database
+    const { data: savedProgram, error: dbErr } = await supabaseAdmin
+      .from('cnc_programs')
+      .insert({
+        project_id,
+        program_number: String(programNumber),
+        gcode_text: gcode,
+        postprocessor_version: '1.0.0-syntec-q5',
+        validation_status: 'Postprocessor Checked'
+      })
+      .select().single();
+
+    if (dbErr) throw new Error(dbErr.message);
+
+    // 6. Return the G-code and the toolpath (for 3D simulation)
+    res.json({ 
+      program_id: savedProgram.id,
+      gcode, 
+      warnings,
+      toolpath 
+    });
   } catch (e) { next(e); }
 });
 
