@@ -90,9 +90,6 @@ export function errorHandler(err, _req, res, _next) {
 }
 
 // --- SERVER BOOTSTRAP ---
-import { default as apiRouter } from './server-api.js';
-import { default as libRouter } from './server-api.js'; // Libs exposed via API or static
-
 const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: env.nodeEnv === 'production' ? process.env.FRONTEND_ORIGIN : true }));
@@ -103,11 +100,15 @@ app.use('/api/', rateLimit({ windowMs: 60_000, max: 120 }));
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/engineering-libs.js', (_req, res) => res.sendFile(path.join(__dirname, 'engineering-libs.js')));
 
-// Mount API
-app.use('/api', apiRouter);
-
-app.use(errorHandler);
-
-app.listen(env.port, () => {
-  console.log(`FANUC Grinding CAM listening on http://localhost:${env.port}`);
+// DYNAMIC IMPORT: Breaks the circular dependency with server-api.js
+import('./server-api.js').then(({ default: apiRouter }) => {
+  app.use('/api', apiRouter);
+  app.use(errorHandler); // Error handler must be registered AFTER routes
+  
+  app.listen(env.port, () => {
+    console.log(`FANUC Grinding CAM listening on http://localhost:${env.port}`);
+  });
+}).catch(err => {
+  console.error('Failed to load API routes:', err);
+  process.exit(1);
 });
