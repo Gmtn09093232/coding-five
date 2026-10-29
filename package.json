@@ -1,10 +1,12 @@
 {
   "name": "fanuc-grinding-cam",
   "version": "0.1.0",
+  "description": "FANUC 31i-B5 Plus Web-Based 5-Axis CNC Grinding CAM System (Phase 1)",
   "type": "module",
+  "main": "server-core.js",
   "scripts": {
     "start": "node server-core.js",
-    "test": "node --test test-suite.js"
+    "test": "node --test tests.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
